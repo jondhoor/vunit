@@ -693,7 +693,11 @@ avoid location preprocessing of other functions sharing name with a VUnit log or
         """
         self._test_bench_list.warn_when_empty()
         test_list = self._test_bench_list.create_tests(simulator_if, self._args.elaborate)
-        test_list.keep_matches(self._test_filter)
+        if self._args.dependent_on is None:
+            test_list.keep_matches(self._test_filter)
+        else:
+            test_list.keep_matches(self._extended_test_filter())
+
         return test_list
 
     def _main(self, post_run):
@@ -1029,3 +1033,78 @@ avoid location preprocessing of other functions sharing name with a VUnit log or
         if self._simulator_class is None:
             return None
         return self._simulator_class.supports_coverage()
+
+    def _extended_test_filter(self):
+        """
+        Extends the normal filter on test cases, based on '--dependent-on' arg
+        """
+        # Obtain the source files from regex expression
+        input_files = []
+        input_patterns = self._args.dependent_on.split(" ")
+        for pattern in input_patterns:
+            # Extend pattern with wildcard to match address path
+            ext_pattern = "*" + pattern
+            for source_file in self._project.get_source_files_in_order():
+                if fnmatch(str(Path(source_file.name).resolve()), ext_pattern) or fnmatch(
+                        ostools.simplify_path(source_file.name), ext_pattern):
+                    input_files.append(source_file)
+
+        # If no files match pattern: set emtpy filter and quit
+        if not input_files:
+            print("No files found matching given patterns!")
+
+            def empty_filter(name, attribute_names):
+                return None
+            return empty_filter
+
+        # Print all matching changed files
+        if self._args.verbose:
+            print("Input files:")
+            for sf in input_files:
+                print(sf.name)
+
+        # Add simulator libraries to prevent warnings when determining dependencies
+        # VUnit does not know these libraries by default
+        simulator = self._create_simulator_if()
+        simulator.add_simulator_specific(self._project)
+
+        # Create dependency graph and determine all files that depend on the input files
+        dependency_graph = self._project.create_dependency_graph()
+        dependent_files = dependency_graph.get_dependent(input_files)
+
+        # Print all dependent files
+        if self._args.verbose:
+            print("Dependent files:")
+            for sf in dependent_files:
+                print(sf.name)
+
+        # From all the dependent files, obtain test benches that need to be simulated
+        test_benches = []
+        for src_file in dependent_files:
+            # Find out if this source file is a test bench.
+            # First, get potential test bench name: i.e. file name without .VHD extension
+            test_bench_name = os.path.basename(os.path.splitext(src_file.name)[0])
+            try:
+                # Use the library property of the SourceFile to find out to which library this file belongs.
+                # Try to fetch the TestBench object with test_bench_name, inside this library.
+                self.library(src_file.library.name).test_bench(test_bench_name)
+
+                # Add to tb list
+                test_benches.append("*." + test_bench_name + ".*")
+            except KeyError:
+                # Not a test bench file, skip.
+                continue
+
+        # Print the test benches to which this simulation is restricted
+        if self._args.verbose:
+            print("Test benches that may be simulated:")
+            for tb in test_benches:
+                print(tb)
+
+        # Extend (make more strict) test filter with new test benches
+        def test_filter(name, attribute_names):
+            keep = self._test_filter(name, attribute_names)
+            keep = keep and any(fnmatch(name, tb_pattern) for tb_pattern in test_benches)
+            return keep
+
+        return test_filter

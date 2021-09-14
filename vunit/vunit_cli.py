@@ -236,6 +236,12 @@ def _create_argument_parser(description=None, for_documentation=False):
 
     parser.add_argument("--version", action="version", version=version())
 
+    parser.add_argument(
+        "--dependent-on",
+        help=("Only simulate test benches that depend on these files. For multiple files: files are seperated by "
+              "spaces and grouped by \"\", e.g. --dependent-on \"f1 f2 f3\" ")
+    )
+
     SIMULATOR_FACTORY.add_arguments(parser)
 
     return parser
